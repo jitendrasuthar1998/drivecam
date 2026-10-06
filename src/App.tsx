@@ -12,6 +12,7 @@ import type {
   CameraDeviceInfo,
   CapturedItem,
   CaptureMode,
+  DriveCloudItem,
   GoogleDriveConfig,
   ResolutionSetting,
   ToastMessage,
@@ -24,6 +25,9 @@ import {
   requestGoogleDriveToken,
   uploadBlobToDrive,
   fetchGoogleUserInfo,
+  listDriveFiles,
+  renameDriveFile,
+  deleteDriveFile,
 } from './utils/googleDrive';
 import {
   saveCaptureToDB,
@@ -36,6 +40,7 @@ import {
 import { Viewfinder } from './components/Viewfinder';
 import { ControlDock } from './components/ControlDock';
 import { PreviewModal } from './components/PreviewModal';
+import { CloudPreviewModal } from './components/CloudPreviewModal';
 import { SettingsModal } from './components/SettingsModal';
 import { GalleryDrawer } from './components/GalleryDrawer';
 import { PermissionDeniedBanner } from './components/PermissionDeniedBanner';
@@ -126,6 +131,11 @@ export const App: React.FC = () => {
   const [previewItem, setPreviewItem] = useState<CapturedItem | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isGalleryOpen, setIsGalleryOpen] = useState(false);
+
+  // --- GOOGLE DRIVE CLOUD STORAGE STATE ---
+  const [cloudFiles, setCloudFiles] = useState<DriveCloudItem[]>([]);
+  const [isLoadingCloud, setIsLoadingCloud] = useState(false);
+  const [selectedCloudItem, setSelectedCloudItem] = useState<DriveCloudItem | null>(null);
 
   // --- GOOGLE DRIVE INTEGRATION ---
   const [driveConfig, setDriveConfig] = useState<GoogleDriveConfig>(getDefaultDriveConfig());
@@ -616,6 +626,39 @@ export const App: React.FC = () => {
     }
   }, [soundEffectsEnabled]);
 
+  // FETCH / REFRESH GOOGLE DRIVE CLOUD FILES
+  const refreshCloudFiles = useCallback(async (customConfig?: GoogleDriveConfig) => {
+    const configToUse = customConfig || driveConfig;
+    if (!configToUse.accessToken && !configToUse.useSimulatedMode) {
+      setCloudFiles([]);
+      return;
+    }
+
+    setIsLoadingCloud(true);
+    try {
+      const files = await listDriveFiles(configToUse);
+      setCloudFiles(files);
+    } catch (err: unknown) {
+      console.warn('Failed to fetch cloud files:', err);
+    } finally {
+      setIsLoadingCloud(false);
+    }
+  }, [driveConfig]);
+
+  useEffect(() => {
+    if (driveConfig.accessToken) {
+      refreshCloudFiles();
+    } else {
+      setCloudFiles([]);
+    }
+  }, [driveConfig.accessToken, driveConfig.folderId, refreshCloudFiles]);
+
+  useEffect(() => {
+    if (isGalleryOpen && driveConfig.accessToken) {
+      refreshCloudFiles();
+    }
+  }, [isGalleryOpen, driveConfig.accessToken, refreshCloudFiles]);
+
   // GOOGLE DRIVE OAUTH CONNECT
   const handleConnectDrive = useCallback(() => {
     if (!driveConfig.clientId && !driveConfig.useSimulatedMode) {
@@ -659,6 +702,7 @@ export const App: React.FC = () => {
         };
         setDriveConfig(updatedConfig);
         saveDriveConfig(updatedConfig);
+        refreshCloudFiles(updatedConfig);
 
         addToast({
           type: 'success',
@@ -674,7 +718,7 @@ export const App: React.FC = () => {
         });
       }
     );
-  }, [driveConfig, addToast]);
+  }, [driveConfig, addToast, refreshCloudFiles]);
 
   // DISCONNECT DRIVE
   const handleDisconnectDrive = useCallback(() => {
@@ -688,6 +732,7 @@ export const App: React.FC = () => {
     };
     setDriveConfig(cleared);
     saveDriveConfig(cleared);
+    setCloudFiles([]);
     addToast({
       type: 'info',
       title: 'Google Drive Disconnected',
@@ -732,6 +777,7 @@ export const App: React.FC = () => {
         };
 
         await updateCaptureInDB(updatedItem);
+        refreshCloudFiles();
 
         setCaptures((prev) => prev.map((c) => (c.id === item.id ? updatedItem : c)));
         if (previewItem?.id === item.id) {
@@ -767,7 +813,63 @@ export const App: React.FC = () => {
         });
       }
     },
-    [driveConfig, previewItem, addToast]
+    [driveConfig, previewItem, addToast, refreshCloudFiles]
+  );
+
+  // CLOUD FILE RENAME
+  const handleCloudRename = useCallback(
+    async (id: string, newName: string) => {
+      try {
+        await renameDriveFile(id, newName, driveConfig);
+        setCloudFiles((prev) =>
+          prev.map((f) => (f.id === id ? { ...f, name: newName } : f))
+        );
+        if (selectedCloudItem?.id === id) {
+          setSelectedCloudItem((prev) => (prev ? { ...prev, name: newName } : null));
+        }
+        addToast({
+          type: 'success',
+          title: 'Renamed on Drive',
+          message: `File renamed to "${newName}".`,
+          duration: 3000,
+        });
+      } catch (err: unknown) {
+        const error = err as Error;
+        addToast({
+          type: 'error',
+          title: 'Rename Failed',
+          message: error.message || 'Could not rename file.',
+        });
+      }
+    },
+    [driveConfig, selectedCloudItem, addToast]
+  );
+
+  // CLOUD FILE DELETE
+  const handleCloudDelete = useCallback(
+    async (id: string) => {
+      try {
+        await deleteDriveFile(id, driveConfig);
+        setCloudFiles((prev) => prev.filter((f) => f.id !== id));
+        if (selectedCloudItem?.id === id) {
+          setSelectedCloudItem(null);
+        }
+        addToast({
+          type: 'info',
+          title: 'Deleted from Drive',
+          message: 'File removed from Google Drive.',
+          duration: 3000,
+        });
+      } catch (err: unknown) {
+        const error = err as Error;
+        addToast({
+          type: 'error',
+          title: 'Delete Failed',
+          message: error.message || 'Could not delete file.',
+        });
+      }
+    },
+    [driveConfig, selectedCloudItem, addToast]
   );
 
   // SAVE DIRECTLY TO DEVICE (DOWNLOAD)
@@ -1013,12 +1115,37 @@ export const App: React.FC = () => {
         isOpen={isGalleryOpen}
         onClose={() => setIsGalleryOpen(false)}
         items={captures}
+        cloudItems={cloudFiles}
+        isLoadingCloud={isLoadingCloud}
+        onRefreshCloud={refreshCloudFiles}
         onSelectItem={(item) => setPreviewItem(item)}
+        onSelectCloudItem={(item) => setSelectedCloudItem(item)}
         onSaveItem={handleSaveToDevice}
         onUploadItem={triggerDriveUpload}
         onDeleteItem={handleDeleteCapture}
+        onDeleteCloudItem={handleCloudDelete}
+        onRenameCloudItem={handleCloudRename}
+        onOpenSettings={() => {
+          setIsGalleryOpen(false);
+          setIsSettingsOpen(true);
+        }}
         driveConfig={driveConfig}
       />
+
+      {/* CLOUD PREVIEW & STREAM PLAYER MODAL */}
+      {selectedCloudItem && (
+        <CloudPreviewModal
+          item={selectedCloudItem}
+          isOpen={!!selectedCloudItem}
+          onClose={() => setSelectedCloudItem(null)}
+          driveConfig={driveConfig}
+          onFileRenamed={handleCloudRename}
+          onFileDeleted={handleCloudDelete}
+          onShowToast={(type, title, message) => {
+            addToast({ type, title, message });
+          }}
+        />
+      )}
     </div>
   );
 };

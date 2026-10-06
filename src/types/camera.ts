@@ -37,6 +37,20 @@ export interface CapturedItem {
   uploadError?: string;
 }
 
+export interface DriveCloudItem {
+  id: string;
+  name: string;
+  type: 'video' | 'photo';
+  mimeType: string;
+  size: number;
+  createdAt: number;
+  webViewLink: string;
+  webContentLink?: string;
+  thumbnailLink?: string;
+  duration?: number;
+  blobUrl?: string;
+}
+
 export interface GoogleDriveConfig {
   clientId: string;
   folderId: string;

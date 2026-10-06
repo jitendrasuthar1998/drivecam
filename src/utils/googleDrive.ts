@@ -1,4 +1,4 @@
-import type { GoogleDriveConfig } from '../types/camera';
+import type { GoogleDriveConfig, DriveCloudItem } from '../types/camera';
 
 // Global declaration for Google Identity Services
 declare global {
@@ -281,4 +281,159 @@ export const uploadBlobToDrive = (
 
     reader.readAsArrayBuffer(blob);
   });
+};
+
+/**
+ * Fetch list of uploaded videos and photos from Google Drive
+ */
+export const listDriveFiles = async (config: GoogleDriveConfig): Promise<DriveCloudItem[]> => {
+  if (config.useSimulatedMode) {
+    return [];
+  }
+
+  if (!config.accessToken) {
+    throw new Error('Google Drive is not connected.');
+  }
+
+  try {
+    let q = "trashed = false and (mimeType contains 'video/' or mimeType contains 'image/')";
+    if (config.folderId && config.folderId.trim() !== '') {
+      q = `'${config.folderId.trim()}' in parents and trashed = false`;
+    }
+
+    const url = new URL('https://www.googleapis.com/drive/v3/files');
+    url.searchParams.set('q', q);
+    url.searchParams.set('orderBy', 'createdTime desc');
+    url.searchParams.set('pageSize', '50');
+    url.searchParams.set(
+      'fields',
+      'files(id, name, mimeType, size, createdTime, webViewLink, webContentLink, thumbnailLink, videoMediaMetadata)'
+    );
+
+    const res = await fetch(url.toString(), {
+      headers: {
+        Authorization: `Bearer ${config.accessToken}`,
+      },
+    });
+
+    if (!res.ok) {
+      if (res.status === 401) {
+        throw new Error('Google authentication expired. Please reconnect in Settings.');
+      }
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error?.message || `Failed to fetch files from Drive (${res.status})`);
+    }
+
+    const data = await res.json();
+    const files = data.files || [];
+
+    return files.map((f: {
+      id: string;
+      name: string;
+      mimeType?: string;
+      size?: string | number;
+      createdTime?: string;
+      webViewLink?: string;
+      webContentLink?: string;
+      thumbnailLink?: string;
+      videoMediaMetadata?: { durationMillis?: string | number };
+    }): DriveCloudItem => {
+      const isVideo =
+        f.mimeType?.startsWith('video/') ||
+        f.name?.toLowerCase().endsWith('.mp4') ||
+        f.name?.toLowerCase().endsWith('.webm');
+
+      let duration: number | undefined = undefined;
+      if (f.videoMediaMetadata?.durationMillis) {
+        duration = Math.round(Number(f.videoMediaMetadata.durationMillis) / 1000);
+      }
+
+      return {
+        id: f.id,
+        name: f.name,
+        type: isVideo ? 'video' : 'photo',
+        mimeType: f.mimeType || (isVideo ? 'video/mp4' : 'image/jpeg'),
+        size: Number(f.size) || 0,
+        createdAt: f.createdTime ? new Date(f.createdTime).getTime() : Date.now(),
+        webViewLink: f.webViewLink || `https://drive.google.com/file/d/${f.id}/view`,
+        webContentLink: f.webContentLink,
+        thumbnailLink: f.thumbnailLink,
+        duration,
+      };
+    });
+  } catch (err: unknown) {
+    console.error('Failed to list Google Drive files:', err);
+    throw err;
+  }
+};
+
+/**
+ * Rename a file directly on Google Drive
+ */
+export const renameDriveFile = async (
+  fileId: string,
+  newName: string,
+  config: GoogleDriveConfig
+): Promise<void> => {
+  if (config.useSimulatedMode) return;
+  if (!config.accessToken) throw new Error('Not connected to Google Drive.');
+
+  const res = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}`, {
+    method: 'PATCH',
+    headers: {
+      Authorization: `Bearer ${config.accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ name: newName }),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error?.message || `Failed to rename file (${res.status})`);
+  }
+};
+
+/**
+ * Delete a file directly from Google Drive
+ */
+export const deleteDriveFile = async (
+  fileId: string,
+  config: GoogleDriveConfig
+): Promise<void> => {
+  if (config.useSimulatedMode) return;
+  if (!config.accessToken) throw new Error('Not connected to Google Drive.');
+
+  const res = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}`, {
+    method: 'DELETE',
+    headers: {
+      Authorization: `Bearer ${config.accessToken}`,
+    },
+  });
+
+  if (!res.ok && res.status !== 204) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error?.message || `Failed to delete file from Drive (${res.status})`);
+  }
+};
+
+/**
+ * Download a file Blob directly from Google Drive using OAuth token
+ */
+export const fetchDriveMediaBlob = async (
+  fileId: string,
+  config: GoogleDriveConfig
+): Promise<Blob> => {
+  if (!config.accessToken) throw new Error('Not connected to Google Drive.');
+
+  const res = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
+    headers: {
+      Authorization: `Bearer ${config.accessToken}`,
+    },
+  });
+
+  if (!res.ok) {
+    throw new Error(`Failed to stream media from Google Drive (${res.status})`);
+  }
+
+  return await res.blob();
 };
