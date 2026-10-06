@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   X,
   Camera,
@@ -11,6 +11,9 @@ import {
   LogOut,
   Folder,
   Gauge,
+  Copy,
+  Check,
+  AlertCircle,
 } from 'lucide-react';
 import type {
   AspectRatioOption,
@@ -81,9 +84,19 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onSelectBitratePreset,
   bitratePresets,
 }) => {
+  const [copiedOrigin, setCopiedOrigin] = useState(false);
+  const [showOAuthHelp, setShowOAuthHelp] = useState(false);
+
   if (!isOpen) return null;
 
   const isConnected = !!driveConfig.accessToken;
+  const currentOrigin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5173';
+
+  const handleCopyOrigin = () => {
+    navigator.clipboard.writeText(currentOrigin);
+    setCopiedOrigin(true);
+    setTimeout(() => setCopiedOrigin(false), 2000);
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-slate-950/85 backdrop-blur-xl animate-in fade-in duration-200">
@@ -384,6 +397,52 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     }
                     className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white font-mono text-xs focus:outline-none focus:border-cyan-500"
                   />
+                  <div className="flex items-center justify-between text-[11px] text-slate-400 pt-1">
+                    <span>Authorized Origin:</span>
+                    <button
+                      type="button"
+                      onClick={handleCopyOrigin}
+                      className="inline-flex items-center gap-1 text-cyan-400 hover:text-cyan-300 font-mono text-[10px] bg-slate-950 px-2 py-0.5 rounded border border-slate-800"
+                    >
+                      {copiedOrigin ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                      <span>{copiedOrigin ? 'Copied' : currentOrigin}</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Error 401 Troubleshooting Accordion */}
+                <div className="bg-slate-950/70 border border-amber-500/20 rounded-xl p-3 text-xs space-y-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowOAuthHelp(!showOAuthHelp)}
+                    className="w-full flex items-center justify-between text-amber-300 hover:text-amber-200 font-medium text-left"
+                  >
+                    <span className="flex items-center gap-1.5">
+                      <AlertCircle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                      <span>Getting "Error 401: invalid_client"?</span>
+                    </span>
+                    <span className="text-[10px] underline">{showOAuthHelp ? 'Hide' : 'How to fix'}</span>
+                  </button>
+
+                  {showOAuthHelp && (
+                    <div className="pt-1.5 space-y-2 text-[11px] text-slate-300 border-t border-amber-500/10">
+                      <p>Check these 3 settings in your <strong>Google Cloud Console</strong>:</p>
+                      <ol className="list-decimal pl-4 space-y-1.5 text-slate-300">
+                        <li>
+                          <strong>Application Type:</strong> Must be set to <strong>"Web application"</strong> (NOT Desktop or Android).
+                        </li>
+                        <li>
+                          <strong>Authorized JavaScript origins:</strong> Add <code className="text-cyan-300 bg-slate-900 px-1 py-0.5 rounded font-mono">{currentOrigin}</code> (exact match, no trailing slash).
+                        </li>
+                        <li>
+                          <strong>OAuth Consent Screen:</strong> In "Test users", click "Add Users" and add your own Google email address.
+                        </li>
+                        <li>
+                          <strong>Enable API:</strong> Search and enable <strong>Google Drive API</strong> in "APIs & Services".
+                        </li>
+                      </ol>
+                    </div>
+                  )}
                 </div>
 
                 {/* Connect Button */}

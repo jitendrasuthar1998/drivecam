@@ -84,6 +84,25 @@ export const fetchGoogleUserInfo = async (accessToken: string) => {
   return null;
 };
 
+export const sanitizeClientId = (raw: string): string => {
+  if (!raw) return '';
+  let clean = raw.trim();
+  // If user pasted credentials JSON
+  if (clean.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(clean);
+      if (parsed.web?.client_id) return parsed.web.client_id;
+      if (parsed.installed?.client_id) return parsed.installed.client_id;
+      if (parsed.client_id) return parsed.client_id;
+    } catch {
+      // ignore
+    }
+  }
+  // Strip quotes and whitespace
+  clean = clean.replace(/^["']|["']$/g, '').trim();
+  return clean;
+};
+
 /**
  * Request Google Drive OAuth2 Access Token via Google Identity Services
  */
@@ -97,14 +116,27 @@ export const requestGoogleDriveToken = (
     return;
   }
 
-  if (!clientId || clientId.trim() === '') {
+  const cleanId = sanitizeClientId(clientId);
+
+  if (!cleanId) {
     onError('Please enter your Google Cloud OAuth Client ID in Settings first.');
+    return;
+  }
+
+  // Diagnostic checks for common Google Cloud Console misconfigurations
+  if (cleanId.startsWith('AIza')) {
+    onError('It looks like you pasted a Google API Key (starts with AIza...) instead of an OAuth 2.0 Client ID. You need an OAuth 2.0 Client ID from Credentials.');
+    return;
+  }
+
+  if (!cleanId.includes('.apps.googleusercontent.com')) {
+    onError('Invalid Client ID format. A Google OAuth Client ID must end with ".apps.googleusercontent.com" (e.g. 123456789-abcdef.apps.googleusercontent.com).');
     return;
   }
 
   try {
     const tokenClient = window.google.accounts.oauth2.initTokenClient({
-      client_id: clientId.trim(),
+      client_id: cleanId,
       scope: DRIVE_SCOPE,
       callback: (response) => {
         if (response.error) {
@@ -125,6 +157,7 @@ export const requestGoogleDriveToken = (
     onError(err instanceof Error ? err.message : 'Failed to launch Google Sign-In.');
   }
 };
+
 
 /**
  * Upload a media Blob directly to Google Drive via multipart upload
@@ -162,10 +195,20 @@ export const uploadBlobToDrive = (
       return;
     }
 
+    // Clean base mime type without codec parameters (e.g. 'video/webm' or 'video/mp4')
+    let cleanMime = 'video/webm';
+    if (filename.toLowerCase().endsWith('.mp4')) {
+      cleanMime = 'video/mp4';
+    } else if (filename.toLowerCase().endsWith('.jpg') || filename.toLowerCase().endsWith('.jpeg')) {
+      cleanMime = 'image/jpeg';
+    } else if (blob.type) {
+      cleanMime = blob.type.split(';')[0].trim();
+    }
+
     // Prepare metadata
     const metadata: { name: string; mimeType: string; parents?: string[] } = {
       name: filename,
-      mimeType: blob.type || 'video/webm',
+      mimeType: cleanMime,
     };
 
     if (config.folderId && config.folderId.trim() !== '') {
@@ -182,7 +225,7 @@ export const uploadBlobToDrive = (
       const uint8 = new Uint8Array(arrayBuffer);
 
       // Build multipart request body as Uint8Array
-      const metaHeader = `${delimiter}Content-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n${delimiter}Content-Type: ${blob.type || 'application/octet-stream'}\r\n\r\n`;
+      const metaHeader = `${delimiter}Content-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n${delimiter}Content-Type: ${cleanMime}\r\n\r\n`;
       const metaBytes = new TextEncoder().encode(metaHeader);
       const closeBytes = new TextEncoder().encode(closeDelimiter);
 

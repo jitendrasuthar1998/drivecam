@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import fixWebmDuration from 'fix-webm-duration';
 import {
   Camera,
   Sliders,
@@ -493,12 +494,13 @@ export const App: React.FC = () => {
 
     recordedChunksRef.current = [];
 
-    // Find best supported MIME type
+    // Prioritize MP4 if supported for seamless instant playback in Google Drive, Safari, iOS & Mac
     const candidateMimes = [
+      'video/mp4;codecs=avc1,mp4a.40.2',
+      'video/mp4',
       'video/webm;codecs=vp9,opus',
       'video/webm;codecs=vp8,opus',
       'video/webm',
-      'video/mp4',
     ];
     let selectedMime = 'video/webm';
     for (const mime of candidateMimes) {
@@ -524,14 +526,24 @@ export const App: React.FC = () => {
       };
 
       recorder.onstop = async () => {
-        const extension = selectedMime.includes('mp4') ? 'mp4' : 'webm';
-        const finalBlob = new Blob(recordedChunksRef.current, { type: selectedMime });
+        const isMp4 = selectedMime.includes('mp4');
+        const extension = isMp4 ? 'mp4' : 'webm';
+        const rawBlob = new Blob(recordedChunksRef.current, { type: selectedMime });
+        const durationMs = Date.now() - recordingStartTimeRef.current;
+        const durationSeconds = Math.max(1, Math.round(durationMs / 1000));
+
+        // Inject missing EBML duration header into WebM so Google Drive and desktop players can scrub and stream properly
+        let finalBlob = rawBlob;
+        if (!isMp4) {
+          try {
+            finalBlob = await fixWebmDuration(rawBlob, durationMs);
+          } catch (err) {
+            console.warn('Could not inject WebM duration header:', err);
+          }
+        }
+
         const filename = generateTimestampFilename(extension);
         const previewUrl = URL.createObjectURL(finalBlob);
-
-        const durationSeconds = Math.round(
-          (Date.now() - recordingStartTimeRef.current) / 1000
-        );
 
         const newItem: CapturedItem = {
           id: Math.random().toString(36).substring(2, 11),
@@ -542,7 +554,7 @@ export const App: React.FC = () => {
           size: finalBlob.size,
           createdAt: Date.now(),
           duration: durationSeconds,
-          mimeType: selectedMime,
+          mimeType: isMp4 ? 'video/mp4' : 'video/webm',
           uploadedToDrive: false,
         };
 
